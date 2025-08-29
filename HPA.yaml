@@ -1,0 +1,43 @@
+# HPA — агрессивный scale-up (быстрый рост при дневных пиках)
+# и scale-down (плавное снижение ночью)
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: web
+  labels:
+    app.kubernetes.io/name: web
+    app.kubernetes.io/part-of: web-stack
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: web
+  minReplicas: 2   # Ночь: минимум 2 пода
+  maxReplicas: 6   # Пиковая нагрузка 4 пода — оставляем запас до 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          # При ~100m и ровном 0.1 CPU/под — целимся в ~60%:
+          # это даёт ранний сигнал на скейл-ап при дневном росте
+          averageUtilization: 60
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0  # Реагируем сразу на рост
+      selectPolicy: Max
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 60
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 900  # 15 минут усреднения перед снижением (можно уменьшить если будут залипать поды)
+      selectPolicy: Min
+      policies:
+        - type: Percent
+          value: 50
+          periodSeconds: 60

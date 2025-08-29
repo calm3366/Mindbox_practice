@@ -1,0 +1,96 @@
+# Deployment — отказоустойчивость через spread по зонам и нодам, корректные probes и ресурсы
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  labels:
+    app.kubernetes.io/name: web
+    app.kubernetes.io/part-of: web-stack
+spec:
+  # replicas здесь — стартовое значение. Далее управляет HPA
+  replicas: 2  # HA (минимум 2 пода) при небольшой ночной нагрузке
+  revisionHistoryLimit: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1         # Добавляем по одному поду во время релиза
+      maxUnavailable: 1   # Не более одного пода недоступно — мягкая замена без даунтайма
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: web
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: web
+        app.kubernetes.io/part-of: web-stack
+    spec:
+      # Распределение по зонам и нодам для максимальной живучести
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule    # Жестко распределяем по зонам
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: web
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway   # Пытаемся равномерно по нодам, но без жесткого запрета
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: web
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: web
+      terminationGracePeriodSeconds: 20  # Время на корректное завершение соединений
+      containers:
+        - name: app
+          image: ghcr.io/example/web:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          # Ресурсы: стабильное потребление ~0.1 CPU и ~128Mi
+          # Даём высокий CPU limit для первых запросов
+          resources:
+            requests:
+              cpu: "100m"     # Базовое потребление
+              memory: "128Mi" # Стабильная память
+            limits:
+              cpu: "1000m"    # CPU на старте/пиках
+              memory: "256Mi" # Небольшой запас по памяти для пиковой нагрузки
+          # Пробы: быстрый пропуск старта, защищаемся от "флаппинга"
+          startupProbe:
+            httpGet:
+              path: /ready    # Используем тот же эндпоинт, если отдельного startup нет
+              port: http
+            periodSeconds: 1
+            failureThreshold: 10 # До ~10 секунд на инициализацию
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          # Корректное выключение: даём балансировщикам время перестать слать трафик
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 10"]
+          securityContext:
+            runAsNonRoot: true # контейнерный процесс не будет запущен от root
+            allowPrivilegeEscalation: false # запрещает процессам внутри контейнера повышать свои права
+            readOnlyRootFilesystem: true # файловая система контейнера монтируется только для чтения

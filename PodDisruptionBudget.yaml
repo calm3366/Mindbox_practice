@@ -1,0 +1,14 @@
+# PodDisruptionBudget — защищаемся от добровольных эвиктов (апгрейды нод и т.п.)
+# При minReplicas=2 не допускаем падение ниже 2 подов
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: web
+  labels:
+    app.kubernetes.io/name: web
+    app.kubernetes.io/part-of: web-stack
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: web
